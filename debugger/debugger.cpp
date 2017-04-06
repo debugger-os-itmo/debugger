@@ -10,6 +10,7 @@
 
 std::vector<long long> breaks;
 bool is_stopped = false;
+bool is_running = false;
 int status;
 
 
@@ -105,6 +106,7 @@ void trace(pid_t pid)
         ptrace(PTRACE_SETREGS, pid, NULL, &regs);
         ptrace(PTRACE_CONT, pid, 0, 0);
         waitpid(pid, &status, 0);*/
+        is_stopped = false;
         ptrace(PTRACE_SYSCALL, pid, 0, 0);
         waitpid(pid, &status, 0);
     }
@@ -124,12 +126,14 @@ void trace(pid_t pid)
                 waitpid(pid, &status, 0);*/
                 printf("Process stopped by SYSCALL %lld at %llx\n", regs.orig_rax, regs.rip);
                 is_stopped = true;
-                break;
+                return;
             }
         }
         ptrace(PTRACE_SYSCALL, pid, 0, 0);
         waitpid(pid, &status, 0);
     }
+    printf("Process %d exited with code %d\n", pid, WEXITSTATUS(status));
+    is_running = false;
 }
 
 void trace_step(pid_t pid)
@@ -141,11 +145,15 @@ void trace_step(pid_t pid)
         putdata(pid, regs.rip, backup, 3);
         ptrace(PTRACE_SETREGS, pid, NULL, &regs);
     }*/
+    if (is_stopped) {
+        is_stopped = false;
+    }
     ptrace(PTRACE_SYSCALL, pid, 0, 0);
     waitpid(pid, &status, 0);
     ptrace(PTRACE_GETREGS, pid, 0, &regs);
     printf("SYSCALL %lld at %llx\n", regs.orig_rax, regs.rip);
 }
+
 
 void print_regs(pid_t pid, char* reg)
 {
@@ -247,19 +255,35 @@ int main(int argc, char* argv[])
                     printf("Breakpoint deleted at %lld\n", atoll(ptr));
                 }
             } else if (strcmp(ptr, "run") == 0) {
-                printf("Process %d is starting\n", traced);
-                trace(traced);
-            } else if (strcmp(ptr, "continue") == 0) {
-                if (is_stopped) {
+                if (!is_running) {
+                    printf("Process %d is starting\n", traced);
+                    is_running = true;
                     trace(traced);
                 } else {
-                    printf("Process is not runnig now. Use: run\n");
+                    printf("Process %d has been started already. Use: continue\n", traced);
+                }
+            } else if (strcmp(ptr, "continue") == 0) {
+                if (is_running) {
+                    trace(traced);
+                } else {
+                    printf("Process %d is not started yet. Use: run\n", traced);
                 }
             } else if (strcmp(ptr, "next") == 0) {
+                if (!is_running) {
+                    is_running = true;
+                }
                 trace_step(traced);
             } else if (strcmp(ptr, "reg") == 0) {
-                ptr = strtok(NULL, " ");
-                print_regs(traced, ptr);
+                if (is_running) {
+                    ptr = strtok(NULL, " ");
+                    if (ptr != NULL) {
+                        print_regs(traced, ptr);
+                    } else {
+                        printf("Invalid argument for reg. See: help.\n");
+                    }
+                } else {
+                    printf("Process %d is not running. No registers are available.\n", traced);
+                }
             } else if (strcmp(ptr, "mem") == 0) {
                 //TODO
                 //печать памяти на текущий момент
