@@ -16,6 +16,61 @@ bool is_running = false;
 int status;
 
 
+namespace { 
+    using std::string;
+    const string QUIT[] = {"quit", "q", "Q", "exit"};
+    const string RUN[] = {"run", "r", "R"};
+    const string HELP[] = {"help", "h", "-h"};
+    const string BREAK[] = {"break"};
+    const string BREAKLIST[] = {"breaklist", "bl"};
+    const string CONTINUE[] = {"continue", "cont"};
+    const string CLEAR[] = {"cl", "clear"};
+    const string NEXT[] = {"next"};
+    const string REG[] = {"reg"};
+    const string MEM[] = {"mem"};
+    
+    template<size_t N> 
+    const string* end(const string (&arr)[N]) {
+        return arr + N;
+    }
+
+    template<size_t N> 
+    bool helper_checker(const string (&arr)[N], const string& instruction) {
+        return find(arr, end(arr), instruction) != end(arr);
+    }
+
+    bool is_quit(const string& instruction) {
+        return helper_checker(QUIT, instruction);
+    }
+    bool is_run(const string& instruction) {
+        return helper_checker(RUN, instruction);
+    }
+    bool is_help(const string& instruction) {
+        return helper_checker(HELP, instruction);
+    }
+    bool is_break(const string& instruction) {
+        return helper_checker(BREAK, instruction);
+    }
+    bool is_breaklist(const string& instruction) {
+        return helper_checker(BREAKLIST, instruction);
+    }
+    bool is_continue(const string& instruction) {
+        return helper_checker(CONTINUE, instruction);
+    }
+    bool is_clear(const string& instruction) {
+        return helper_checker(CLEAR, instruction);
+    }
+    bool is_next(const string& instruction) {
+        return helper_checker(NEXT, instruction);
+    }
+    bool is_reg(const string& instruction) {
+        return helper_checker(REG, instruction);
+    }
+    bool is_mem(const string& instruction) {
+        return helper_checker(MEM, instruction);
+    }
+}
+
 /*
  * Эта часть нужна для подмены системных вызовов в ребенке, но я пока справился без нее
  *
@@ -193,6 +248,17 @@ void print_regs(pid_t pid, const std::string& reg_name)
     #undef magic_with_define
 }
 
+void read_child_memory(int pid, size_t address) { 
+    for (int tries = 0; tries < 5; ++tries) {
+        errno = 0;
+        long data = ptrace(PTRACE_PEEKDATA, pid, reinterpret_cast<void*>(address), 0);
+        if (errno == 0) {
+            std::cout << "mem " << address << ": " << data << "\n";
+        }
+    }
+    std::cout << "Can't read memory by this address: " << address << ' ' << strerror(errno) << "\n";
+}
+
 void child(char* path)
 {
     char* file = strtok(path, "\\");
@@ -213,8 +279,59 @@ void child(char* path)
  * Также, каждый системный вызов ловится дважды (возможно это фиксится, а возможно нет, как в gdb)
 */
 
-long long atoll(const std::string& data) {
-    return atoll(data.c_str());
+void print_help() {
+    printf("break <SYSCALL>     - Set a breakpoint at SYSCALL\n");
+    printf("breaklist           - Prints list of set breakpoints\n");
+    printf("clear <SYSCALL>     - Delete a breakpoint from SYSCALL\n");
+    printf("continue            - Continues the stopped process\n");
+    printf("help                - Prints this help message\n");
+    printf("mem <address>       - Prints memory at address\n");
+    printf("next                - Do next step\n");
+    printf("reg <register>      - Prints register\n");
+    printf("run                 - Start the process\n");
+    printf("quit                - Exit the programm\n");
+}
+
+pid_t traced = -1;
+
+void kill_child() {
+    if (traced != -1) {
+        ptrace(PTRACE_DETACH, traced, NULL, NULL);
+        kill(traced, SIGTERM);
+    }
+    exit(0); 
+}
+
+void set_signal_handler() {
+    if (signal(SIGINT, [](int signo) { 
+            if(signo == SIGINT) {
+                std::cout << "\tquit with signal\n";
+                kill_child();
+            }
+        }
+        ) == SIG_ERR) {
+        std::cout << "Can't handle signals\n";
+        exit(0);
+    }
+}
+
+void invalid_args(const std::string& com) {
+    printf("Invalid argument for %s\n", com.c_str());
+}
+
+void set_breakpoint(std::stringstream& stream) {
+    size_t data;
+    if (stream >> data) {
+        if (find(breaks.begin(), breaks.end(), data) != breaks.end()) {
+            breaks.push_back(data);
+            printf("Breakpoint set at %zu\n", data);
+        } else {
+            std::cout << "Such breakpoint was set earlier\n";
+        }
+    } else {
+        invalid_args("breaklist");
+    }
+
 }
 
 int main(int argc, char* argv[])
@@ -224,49 +341,39 @@ int main(int argc, char* argv[])
         printf("Usage: %s <full path to process to be traced>\n", argv[0]);
         return -1;
     }
+    set_signal_handler();
+    traced = fork();
 
-    pid_t traced = fork();
     if (traced)
     {
         waitpid(traced, &status, 0);
         std::string command;
         while (true)
         {
-            printf("> ");
-     
+            printf("> ");     
             getline(std::cin, command);
             std::stringstream stream(command);
             std::string next_command;
-            std::string data;
+            size_t data;
+                
             stream >> next_command;
-            if (next_command == "quit") {
-                ptrace(PTRACE_DETACH, traced, NULL, NULL);
-                kill(traced, SIGTERM);
-                return 0;
-            } else if (next_command == "break") {
+            if (is_quit(next_command)) {
+                kill_child();
+            } else if (is_break(next_command)) {
+                set_breakpoint(stream);
+            } else if (is_breaklist(next_command)) {
+                for (size_t breakpoint : breaks) 
+                    printf("Breakpoint at %zu\n", breakpoint);
+            } else if (is_clear(next_command)) {
                 stream >> data;
-                auto it = find(breaks.begin(), breaks.end(), atoll(data));
-                if (it != breaks.end()) {
-                    printf("already have such breakpoint\n");
-                } else if (data != "") {
-                    breaks.push_back(atoll(data));
-                    printf("Breakpoint set at %lld\n", atoll(data));
-                } else {
-                    printf("Invalid argument for break\n");
-                }
-            } else if (next_command == "breaklist") {
-                for (auto i = breaks.begin(); i != breaks.end(); i++)
-                    printf("Breakpoint at %lld\n", *i);
-            } else if (next_command == "clear") {
-                stream >> data;
-                auto p = std::find(breaks.begin(), breaks.end(), atoll(data));
+                auto p = std::find(breaks.begin(), breaks.end(), data);
                 if (p == breaks.end()) {
-                    printf("Invalid argument for clear\n");
+                    invalid_args(next_command);
                 } else {
                     breaks.erase(p);
-                    printf("Breakpoint deleted at %lld\n", atoll(data));
+                    printf("Breakpoint deleted at %zu\n", data);
                 }
-            } else if (next_command == "run") {
+            } else if (is_run(next_command)) {
                 if (!is_running) {
                     printf("Process %d is starting\n", traced);
                     is_running = true;
@@ -274,43 +381,31 @@ int main(int argc, char* argv[])
                 } else {
                     printf("Process %d has been started already. Use: continue\n", traced);
                 }
-            } else if (next_command == "continue") {
+            } else if (is_continue(next_command)) {
                 if (is_running) {
                     trace(traced);
                 } else {
                     printf("Process %d is not started yet. Use: run\n", traced);
                 }
-            } else if (next_command == "next") {
-                if (!is_running) {
-                    is_running = true;
-                }
+            } else if (is_next(next_command)) {
+                is_running = true;
                 trace_step(traced);
-            } else if (next_command == "reg") {
+            } else if (is_reg(next_command)) {
                 if (is_running) {
-                    stream >> data;
-                    if (!data.empty()) {
-                        print_regs(traced, data);
+                    std::string reg_name;
+                    if (stream >> reg_name && !reg_name.empty()) {
+                        print_regs(traced, reg_name);
                     } else {
-                        printf("Invalid argument for reg. See: help.\n");
+                        invalid_args(next_command);
                     }
                 } else {
                     printf("Process %d is not running. No registers are available.\n", traced);
                 }
-            } else if (next_command == "mem") {
-                //TODO
-                //печать памяти на текущий момент
-                //Это не понятно. Мехрубон? Рома?
-            } else if (next_command == "help") {
-                printf("break <SYSCALL>     - Set a breakpoint at SYSCALL\n");
-                printf("breaklist           - Prints list of set breakpoints\n");
-                printf("clear <SYSCALL>     - Delete a breakpoint from SYSCALL\n");
-                printf("continue            - Continues the stopped process\n");
-                printf("help                - Prints this help message\n");
-                printf("mem <address>       - Prints memory at address\n");
-                printf("next                - Do next step\n");
-                printf("reg <register>      - Prints register\n");
-                printf("run                 - Start the process\n");
-                printf("quit                - Exit the programm\n");
+            } else if (is_mem(next_command)) {
+                stream >> data;
+                read_child_memory(traced, data);
+            } else if (is_help(next_command)) {
+                print_help();
             } else {
                 printf("Invalid command. See help.\n");
             }
