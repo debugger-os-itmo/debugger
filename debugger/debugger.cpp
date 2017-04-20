@@ -7,6 +7,8 @@
 #include <vector>
 #include <algorithm>
 #include <iostream>
+#include <sstream>
+#include <stdio.h>
 
 std::vector<long long> breaks;
 bool is_stopped = false;
@@ -155,39 +157,40 @@ void trace_step(pid_t pid)
 }
 
 
-void print_regs(pid_t pid, char* reg)
+void print_regs(pid_t pid, const std::string& reg_name)
 {
     struct user_regs_struct regs;
     ptrace(PTRACE_GETREGS, pid, 0, &regs);
-    if (strcmp(reg, "r15") == 0) printf("r15 = %lld\n", regs.r15);
-    else if (strcmp(reg, "r14") == 0) printf("r14 = %lld\n", regs.r14);
-    else if (strcmp(reg, "r13") == 0) printf("r13 = %lld\n", regs.r13);
-    else if (strcmp(reg, "r12") == 0) printf("r12 = %lld\n", regs.r12);
-    else if (strcmp(reg, "rbp") == 0) printf("rbp = %lld\n", regs.rbp);
-    else if (strcmp(reg, "rbx") == 0) printf("rbx = %lld\n", regs.rbx);
-    else if (strcmp(reg, "r11") == 0) printf("r11 = %lld\n", regs.r11);
-    else if (strcmp(reg, "r10") == 0) printf("r10 = %lld\n", regs.r10);
-    else if (strcmp(reg, "r9") == 0) printf("r9 = %lld\n", regs.r9);
-    else if (strcmp(reg, "r8") == 0) printf("r8 = %lld\n", regs.r8);
-    else if (strcmp(reg, "rax") == 0) printf("rax = %lld\n", regs.rax);
-    else if (strcmp(reg, "rcx") == 0) printf("rcx = %lld\n", regs.rcx);
-    else if (strcmp(reg, "rdx") == 0) printf("rdx = %lld\n", regs.rdx);
-    else if (strcmp(reg, "rsi") == 0) printf("rsi = %lld\n", regs.rsi);
-    else if (strcmp(reg, "rdi") == 0) printf("rdi = %lld\n", regs.rdi);
-    else if (strcmp(reg, "orig_rax") == 0) printf("orig_rax = %lld\n", regs.orig_rax);
-    else if (strcmp(reg, "rip") == 0) printf("rip = %lld\n", regs.rip);
-    else if (strcmp(reg, "cs") == 0) printf("cs = %lld\n", regs.cs);
-    else if (strcmp(reg, "eflags") == 0) printf("eflags = %lld\n", regs.eflags);
-    else if (strcmp(reg, "rsp") == 0) printf("rsp = %lld\n", regs.rsp);
-    else if (strcmp(reg, "ss") == 0) printf("ss = %lld\n", regs.ss);
-    else if (strcmp(reg, "fs_base") == 0) printf("fs_base = %lld\n", regs.fs_base);
-    else if (strcmp(reg, "gs_base") == 0) printf("gs_base = %lld\n", regs.gs_base);
-    else if (strcmp(reg, "ds") == 0) printf("ds = %lld\n", regs.ds);
-    else if (strcmp(reg, "es") == 0) printf("es = %lld\n", regs.es);
-    else if (strcmp(reg, "fs") == 0) printf("fs = %lld\n", regs.fs);
-    else if (strcmp(reg, "gs") == 0) printf("gs = %lld\n", regs.gs);
+    #define magic_with_define(s) if (reg_name == #s) printf(#s" = %lld\n", regs.s)
+    magic_with_define(r15);
+    else magic_with_define(r14);
+    else magic_with_define(r13);
+    else magic_with_define(r12);
+    else magic_with_define(rbp);
+    else magic_with_define(rbx);
+    else magic_with_define(r11);
+    else magic_with_define(r10);
+    else magic_with_define(r9);
+    else magic_with_define(r8);
+    else magic_with_define(rax);
+    else magic_with_define(rcx);
+    else magic_with_define(rdx);
+    else magic_with_define(rsi);
+    else magic_with_define(rdi);
+    else magic_with_define(orig_rax);
+    else magic_with_define(rip);
+    else magic_with_define(cs);
+    else magic_with_define(eflags);
+    else magic_with_define(rsp);
+    else magic_with_define(ss);
+    else magic_with_define(fs_base);
+    else magic_with_define(gs_base);
+    else magic_with_define(ds);
+    else magic_with_define(es);
+    else magic_with_define(fs);
+    else magic_with_define(gs);
     else printf("Invalid register\n");
-
+    #undef magic_with_define
 }
 
 void child(char* path)
@@ -210,6 +213,10 @@ void child(char* path)
  * Также, каждый системный вызов ловится дважды (возможно это фиксится, а возможно нет, как в gdb)
 */
 
+long long atoll(const std::string& data) {
+    return atoll(data.c_str());
+}
+
 int main(int argc, char* argv[])
 {
     if (argc != 2)
@@ -222,39 +229,44 @@ int main(int argc, char* argv[])
     if (traced)
     {
         waitpid(traced, &status, 0);
-
         std::string command;
         while (true)
         {
             printf("> ");
+     
             getline(std::cin, command);
-            char* ptr;
-            ptr = strtok(const_cast<char*>(command.c_str()), " ");
-            if (strcmp(ptr, "quit") == 0) {
+            std::stringstream stream(command);
+            std::string next_command;
+            std::string data;
+            stream >> next_command;
+            if (next_command == "quit") {
                 ptrace(PTRACE_DETACH, traced, NULL, NULL);
                 kill(traced, SIGTERM);
                 return 0;
-            } else if (strcmp(ptr, "break") == 0) {
-                ptr = strtok(NULL, " ");
-                if (ptr != NULL) {
-                    breaks.push_back(atoll(ptr));
-                    printf("Breakpoint set at %lld\n", atoll(ptr));
+            } else if (next_command == "break") {
+                stream >> data;
+                auto it = find(breaks.begin(), breaks.end(), atoll(data));
+                if (it != breaks.end()) {
+                    printf("already have such breakpoint\n");
+                } else if (data != "") {
+                    breaks.push_back(atoll(data));
+                    printf("Breakpoint set at %lld\n", atoll(data));
                 } else {
                     printf("Invalid argument for break\n");
                 }
-            } else if (strcmp(ptr, "breaklist") == 0) {
+            } else if (next_command == "breaklist") {
                 for (auto i = breaks.begin(); i != breaks.end(); i++)
                     printf("Breakpoint at %lld\n", *i);
-            } else if (strcmp(ptr, "clear") == 0) {
-                ptr = strtok(NULL, " ");
-                auto p = std::find(breaks.begin(), breaks.end(), atoll(ptr));
+            } else if (next_command == "clear") {
+                stream >> data;
+                auto p = std::find(breaks.begin(), breaks.end(), atoll(data));
                 if (p == breaks.end()) {
                     printf("Invalid argument for clear\n");
                 } else {
                     breaks.erase(p);
-                    printf("Breakpoint deleted at %lld\n", atoll(ptr));
+                    printf("Breakpoint deleted at %lld\n", atoll(data));
                 }
-            } else if (strcmp(ptr, "run") == 0) {
+            } else if (next_command == "run") {
                 if (!is_running) {
                     printf("Process %d is starting\n", traced);
                     is_running = true;
@@ -262,33 +274,33 @@ int main(int argc, char* argv[])
                 } else {
                     printf("Process %d has been started already. Use: continue\n", traced);
                 }
-            } else if (strcmp(ptr, "continue") == 0) {
+            } else if (next_command == "continue") {
                 if (is_running) {
                     trace(traced);
                 } else {
                     printf("Process %d is not started yet. Use: run\n", traced);
                 }
-            } else if (strcmp(ptr, "next") == 0) {
+            } else if (next_command == "next") {
                 if (!is_running) {
                     is_running = true;
                 }
                 trace_step(traced);
-            } else if (strcmp(ptr, "reg") == 0) {
+            } else if (next_command == "reg") {
                 if (is_running) {
-                    ptr = strtok(NULL, " ");
-                    if (ptr != NULL) {
-                        print_regs(traced, ptr);
+                    stream >> data;
+                    if (!data.empty()) {
+                        print_regs(traced, data);
                     } else {
                         printf("Invalid argument for reg. See: help.\n");
                     }
                 } else {
                     printf("Process %d is not running. No registers are available.\n", traced);
                 }
-            } else if (strcmp(ptr, "mem") == 0) {
+            } else if (next_command == "mem") {
                 //TODO
                 //печать памяти на текущий момент
                 //Это не понятно. Мехрубон? Рома?
-            } else if (strcmp(ptr, "help") == 0) {
+            } else if (next_command == "help") {
                 printf("break <SYSCALL>     - Set a breakpoint at SYSCALL\n");
                 printf("breaklist           - Prints list of set breakpoints\n");
                 printf("clear <SYSCALL>     - Delete a breakpoint from SYSCALL\n");
