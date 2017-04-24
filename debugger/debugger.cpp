@@ -3,133 +3,142 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <string.h>
+#include <string>
 #include <sys/user.h>
 #include <vector>
 #include <algorithm>
 #include <iostream>
+#include <map>
+#include <set>
+#include "debug_info.h"
 
-std::vector<long long> breaks;
+
+long log_error(long ret) {
+    if (ret == -1) {
+        switch (errno) {
+            case EIO:
+                std::cerr << "PTRACE ERROR: EIO!" << '\n';
+            case EPERM:
+                std::cerr << "PTRACE ERROR: EPERM!" << '\n';
+            case EINVAL:
+                std::cerr << "PTRACE ERROR: EINVAL!" << '\n';
+            case EFAULT:
+                std::cerr << "PTRACE ERROR: EFAULT!" << '\n';
+            default:
+                std::cerr << "PTRACE ERROR: ESRCH!" << '\n';
+        }
+    }
+    return ret;
+}
+
+std::set<unsigned long long> breaks;
+/* истина, если текущий брейкпоинт удалили, когда стояли на нем.
+ зачем это нужно: чтобы продолжить выполнение, нужно в любом случае
+ убрать 0xcc с инструкции, перейти к следующей, и только потом восстановить
+ брейк, если !cleared_on_stop
+ */
+bool cleared_on_stop = false;
 bool is_stopped = false;
+bool stopped_on_pc_break = false;
+unsigned long long cur_pc_break;
 bool is_running = false;
 int status;
+std::map<unsigned long long, long> text;
+debug_info *info;
 
-
-/*
- * Эта часть нужна для подмены системных вызовов в ребенке, но я пока справился без нее
- *
-char code[] = {(char)0xcd, (char)0x80, (char)0xcc, (char)0};
-char backup[4];
-const int long_size = sizeof(long long);
-void getdata(pid_t child, long long addr, char *str, int len)
-{   char *laddr;
-    int i, j;
-    union u {
-        long long val;
-        char chars[long_size];
-    }data;
-    i = 0;
-    j = len / long_size;
-    laddr = str;
-    while(i < j) {
-        data.val = ptrace(PTRACE_PEEKDATA, child, addr + i * 8, NULL);
-        memcpy(laddr, data.chars, long_size);
-        ++i;
-        laddr += long_size;
+void set_pc_break(pid_t traced, unsigned long long b) {
+    if (breaks.find(b) != breaks.end()) {
+        printf("Breakpoint at %llx already set\n", b);
+        return;
     }
-    j = len % long_size;
-    if(j != 0) {
-        data.val = ptrace(PTRACE_PEEKDATA, child, addr + i * 8, NULL);
-        memcpy(laddr, data.chars, j);
-    }
-    str[len] = '\0';
+    long instr = log_error(ptrace(PTRACE_PEEKTEXT, traced, (void *) b, NULL));
+    printf("Set breakpoint at PC %llx\n", b);
+    text[b] = instr;
+    log_error(ptrace(PTRACE_POKETEXT, traced, (void *) b, (void *) (0xcc | (instr & 0xffffffffffffff00))));
+    if (stopped_on_pc_break && cur_pc_break == b)
+        cleared_on_stop = true;
+    breaks.insert(b);
 }
 
-void putdata(pid_t child, long long addr, char *str, int len)
-{   char *laddr;
-    int i, j;
-    union u {
-        long long val;
-        char chars[long_size];
-    }data;
-    i = 0;
-    j = len / long_size;
-    laddr = str;
-    while(i < j) {
-        memcpy(data.chars, laddr, long_size);
-        ptrace(PTRACE_POKEDATA, child, addr + i * 8, data.val);
-        ++i;
-        laddr += long_size;
+void remove_pc_break(pid_t traced, unsigned long long b) {
+    if (breaks.find(b) == breaks.end()) {
+        printf("Breakpoint at %llx is not set\n", b);
+        return;
     }
-    j = len % long_size;
-    if(j != 0) {
-        memcpy(data.chars, laddr, j);
-        ptrace(PTRACE_POKEDATA, child, addr + i * 8, data.val);
+    if (stopped_on_pc_break && cur_pc_break == b) {
+        printf("Breakpoint deleted at %llx\n", b);
+        cleared_on_stop = true;
+        return;
+    }
+    printf("Breakpoint deleted at PC %llx\n", b);
+    log_error(ptrace(PTRACE_POKETEXT, traced, (void *) b, (void *) text[b]));
+    breaks.erase(b);
+}
+
+
+bool handle_pc_break(pid_t traced, unsigned long long b) {
+    long t = log_error(ptrace(PTRACE_PEEKTEXT, traced, (void *) b, 0));
+    if ((t & 0xff) != 0xcc)
+        return 0;
+    auto res = info->line_by_pc(b);
+    printf("stopped at PC %llx, line %llx, file %s\n", b, res.second, res.first.c_str());
+    user_regs_struct regs;
+    log_error(ptrace(PTRACE_GETREGS, traced, 0, &regs));
+    regs.rip--;
+    log_error(ptrace(PTRACE_SETREGS, traced, 0, &regs));
+    t &= 0xffffffffffffff00;
+    t |= (text[b] & 0xff);
+    log_error(ptrace(PTRACE_POKETEXT, traced, b, t));
+    cur_pc_break = b;
+    return 1;
+}
+
+void continue_from_break(pid_t traced, unsigned long long b) {
+    log_error(ptrace(PTRACE_SINGLESTEP, traced, 0, 0));
+    waitpid(traced, &status, 0);
+    if (WIFSTOPPED(status) && WSTOPSIG(status) & SIGTRAP) {
+        long instr = log_error(ptrace(PTRACE_PEEKTEXT, traced, b, 0));
+        if (!cleared_on_stop) {
+            instr &= 0xffffffffffffff00;
+            instr |= 0xcc;
+        }
+        else
+            cleared_on_stop = false;
+        log_error(ptrace(PTRACE_POKETEXT, traced, b, instr));
+        user_regs_struct regs;
+        log_error(ptrace(PTRACE_GETREGS, traced, 0, &regs));
+        log_error(ptrace(PTRACE_CONT, traced, 0, 0));
+        waitpid(traced, &status, 0);
+        is_stopped = 0;
     }
 }
- *
-*/
+
 
 void trace(pid_t pid)
 {
-    /*
-     * Simple prints all SYSCALLS of attached process
-     *
-    while (!WIFEXITED(status))
-    {
-        struct user_regs_struct state;
-
-        if (WIFSTOPPED(status) && (WSTOPSIG(status) & SIGTRAP))
-        {
-            ptrace(PTRACE_GETREGS, pid, 0, &state);
-            printf("SYSCALL %lld at %llx\n", state.orig_rax, state.rip);
-
-
-            if (state.orig_rax == 1)
-            {
-                char* text = (char*) state.rsi;
-                ptrace(PTRACE_POKEDATA, pid, (void*) (text), 0x77207449);
-                ptrace(PTRACE_POKEDATA, pid, (void*) (text + 4), 0x736b726f);
-                ptrace(PTRACE_POKEDATA, pid, (void*) (text + 8), 0x00000a21);
-            }
-        }
-        ptrace(PTRACE_SYSCALL, pid, 0, 0);
-        waitpid(pid, &status, 0);
-    }
-     *
-    */
 
     struct user_regs_struct regs;
 
     if (is_stopped) {
-        /*is_stopped = false;
-        putdata(pid, regs.rip, backup, 3);
-        ptrace(PTRACE_SETREGS, pid, NULL, &regs);
-        ptrace(PTRACE_CONT, pid, 0, 0);
-        waitpid(pid, &status, 0);*/
         is_stopped = false;
-        ptrace(PTRACE_SYSCALL, pid, 0, 0);
+        log_error(ptrace(PTRACE_SYSCALL, pid, 0, 0));
         waitpid(pid, &status, 0);
     }
-
     while (!WIFEXITED(status))
     {
         if (WIFSTOPPED(status) && (WSTOPSIG(status) & SIGTRAP))
         {
-            ptrace(PTRACE_GETREGS, pid, 0, &regs);
-            printf("SYSCALL %lld at %llx\n", regs.orig_rax, regs.rip);
-
-            auto p = std::find(breaks.begin(), breaks.end(), regs.orig_rax);
-            if (p != breaks.end()) {
-                /*getdata(pid, regs.rip, backup, 3);
-                putdata(pid, regs.rip, code, 3);
-                ptrace(PTRACE_CONT, pid, NULL, NULL);
-                waitpid(pid, &status, 0);*/
-                printf("Process stopped by SYSCALL %lld at %llx\n", regs.orig_rax, regs.rip);
+            log_error(ptrace(PTRACE_GETREGS, pid, 0, &regs));
+            if (regs.orig_rax >= 0 && regs.orig_rax < 512) {
+                printf("SYSCALL %3lld at %llx\n", regs.orig_rax, regs.rip);
+            }
+            stopped_on_pc_break = handle_pc_break(pid, regs.rip - 1);
+            if (stopped_on_pc_break) {
                 is_stopped = true;
                 return;
             }
         }
-        ptrace(PTRACE_SYSCALL, pid, 0, 0);
+        log_error(ptrace(PTRACE_SYSCALL, pid, 0, 0));
         waitpid(pid, &status, 0);
     }
     printf("Process %d exited with code %d\n", pid, WEXITSTATUS(status));
@@ -139,26 +148,20 @@ void trace(pid_t pid)
 void trace_step(pid_t pid)
 {
     struct user_regs_struct regs;
-
-    /*if (is_stopped) {
-        is_stopped = false;
-        putdata(pid, regs.rip, backup, 3);
-        ptrace(PTRACE_SETREGS, pid, NULL, &regs);
-    }*/
     if (is_stopped) {
         is_stopped = false;
     }
-    ptrace(PTRACE_SYSCALL, pid, 0, 0);
+    log_error(ptrace(PTRACE_SYSCALL, pid, 0, 0));
     waitpid(pid, &status, 0);
-    ptrace(PTRACE_GETREGS, pid, 0, &regs);
-    printf("SYSCALL %lld at %llx\n", regs.orig_rax, regs.rip);
+    log_error(ptrace(PTRACE_GETREGS, pid, 0, &regs));
+    printf("SYSCALL %3lld at %llx\n", regs.orig_rax, regs.rip);
 }
 
 
 void print_regs(pid_t pid, char* reg)
 {
     struct user_regs_struct regs;
-    ptrace(PTRACE_GETREGS, pid, 0, &regs);
+    log_error(ptrace(PTRACE_GETREGS, pid, 0, &regs));
     if (strcmp(reg, "r15") == 0) printf("r15 = %lld\n", regs.r15);
     else if (strcmp(reg, "r14") == 0) printf("r14 = %lld\n", regs.r14);
     else if (strcmp(reg, "r13") == 0) printf("r13 = %lld\n", regs.r13);
@@ -199,15 +202,12 @@ void child(char* path)
         file = strtok(0, "\\");
     }
 
-    ptrace(PTRACE_TRACEME, 0, 0, 0);
+    log_error(ptrace(PTRACE_TRACEME, 0, 0, 0));
     execl(path, last, NULL);
 }
 
 /*
- * Сейчас программа работает, но брейки устанавливаются по системным вызовам.
- * Видимо это не совсем то, что хочется.
- * Надо как-то перейти к командам или строкам.
- * Также, каждый системный вызов ловится дважды (возможно это фиксится, а возможно нет, как в gdb)
+ * каждый системный вызов ловится дважды (возможно это фиксится, а возможно нет, как в gdb)
 */
 
 int main(int argc, char* argv[])
@@ -217,7 +217,12 @@ int main(int argc, char* argv[])
         printf("Usage: %s <full path to process to be traced>\n", argv[0]);
         return -1;
     }
-
+    try {
+        info = new debug_info(std::string(argv[1]));
+    }
+    catch (const std::invalid_argument& e) {
+        printf("%s\n", e.what());
+    }
     pid_t traced = fork();
     if (traced)
     {
@@ -228,32 +233,63 @@ int main(int argc, char* argv[])
         {
             printf("> ");
             getline(std::cin, command);
+            if (command.empty())
+                continue;
             char* ptr;
             ptr = strtok(const_cast<char*>(command.c_str()), " ");
             if (strcmp(ptr, "quit") == 0) {
-                ptrace(PTRACE_DETACH, traced, NULL, NULL);
+                log_error(ptrace(PTRACE_DETACH, traced, NULL, NULL));
                 kill(traced, SIGTERM);
                 return 0;
             } else if (strcmp(ptr, "break") == 0) {
                 ptr = strtok(NULL, " ");
                 if (ptr != NULL) {
-                    breaks.push_back(atoll(ptr));
-                    printf("Breakpoint set at %lld\n", atoll(ptr));
+                    if (!strcmp(ptr, "-pc")) {
+                        ptr = strtok(NULL, " ");
+                        set_pc_break(traced, std::stoull(std::string(ptr), nullptr, 16));
+                    }
+                    else {
+                        try {
+                            size_t l = std::stoull(std::string(ptr), nullptr);
+                            ptr = strtok(NULL, " ");
+                            if (ptr != NULL)
+                                set_pc_break(traced, info->pc_by_line(std::string(ptr), l));
+                            else
+                                set_pc_break(traced, info->pc_by_line(l));
+                        }
+                        catch (std::exception& e) {
+                            printf("Invalid number argument for break\n");
+                        }
+                    }
                 } else {
                     printf("Invalid argument for break\n");
                 }
             } else if (strcmp(ptr, "breaklist") == 0) {
                 for (auto i = breaks.begin(); i != breaks.end(); i++)
-                    printf("Breakpoint at %lld\n", *i);
+                    printf("Breakpoint at %llx\n", *i);
             } else if (strcmp(ptr, "clear") == 0) {
                 ptr = strtok(NULL, " ");
-                auto p = std::find(breaks.begin(), breaks.end(), atoll(ptr));
-                if (p == breaks.end()) {
-                    printf("Invalid argument for clear\n");
-                } else {
-                    breaks.erase(p);
-                    printf("Breakpoint deleted at %lld\n", atoll(ptr));
+                if (ptr != NULL) {
+                    if (!strcmp(ptr, "-pc")) {
+                        ptr = strtok(NULL, " ");
+                        unsigned long long bp = std::stoull(std::string(ptr), nullptr, 16);
+                        remove_pc_break(traced, bp);
+                    }
+                    else {
+                        try {
+                            size_t l = std::stoull(std::string(ptr), nullptr);
+                            ptr = strtok(NULL, " ");
+                            if (ptr != NULL)
+                                remove_pc_break(traced, info->pc_by_line(std::string(ptr), l));
+                            else
+                                remove_pc_break(traced, info->pc_by_line(l));
+                        }
+                        catch (std::exception& e) {
+                            printf("Invalid number argument for break\n");
+                        }
+                    }
                 }
+
             } else if (strcmp(ptr, "run") == 0) {
                 if (!is_running) {
                     printf("Process %d is starting\n", traced);
@@ -264,6 +300,8 @@ int main(int argc, char* argv[])
                 }
             } else if (strcmp(ptr, "continue") == 0) {
                 if (is_running) {
+                    if (stopped_on_pc_break)
+                        continue_from_break(traced, cur_pc_break);
                     trace(traced);
                 } else {
                     printf("Process %d is not started yet. Use: run\n", traced);
@@ -289,16 +327,18 @@ int main(int argc, char* argv[])
                 //печать памяти на текущий момент
                 //Это не понятно. Мехрубон? Рома?
             } else if (strcmp(ptr, "help") == 0) {
-                printf("break <SYSCALL>     - Set a breakpoint at SYSCALL\n");
-                printf("breaklist           - Prints list of set breakpoints\n");
-                printf("clear <SYSCALL>     - Delete a breakpoint from SYSCALL\n");
-                printf("continue            - Continues the stopped process\n");
-                printf("help                - Prints this help message\n");
-                printf("mem <address>       - Prints memory at address\n");
-                printf("next                - Do next step\n");
-                printf("reg <register>      - Prints register\n");
-                printf("run                 - Start the process\n");
-                printf("quit                - Exit the programm\n");
+                printf("break -pc <PC>                  - Set a breakpoint at PC\n");
+                printf("break <line number> [filename]  - Set a breakpoint at line\n");
+                printf("breaklist                       - Prints list of set breakpoints\n");
+                printf("clear -pc <PC>                  - Delete a breakpoint at PC\n");
+                printf("clear <line number> [filename]  - Delete a breakpoint at line\n");
+                printf("continue                        - Continues the stopped process\n");
+                printf("help                            - Prints this help message\n");
+                printf("mem <address>                   - Prints memory at address\n");
+                printf("next                            - Do next step\n");
+                printf("reg <register>                  - Prints register\n");
+                printf("run                             - Start the process\n");
+                printf("quit                            - Exit the program\n");
             } else {
                 printf("Invalid command. See help.\n");
             }
@@ -309,45 +349,4 @@ int main(int argc, char* argv[])
         child(argv[1]);
     }
 
-    // g++ -std=c++14 -Wall -Wextra -Werror debugger.cpp -o debugger
-    // gcc hello.c -o hello
-    // ./debugger <full path to hello>
 }
-
-/*
- 0x0000000000400546 <+0>:	push   %rbp
-   0x0000000000400547 <+1>:	mov    %rsp,%rbp
-   0x000000000040054a <+4>:	mov    $0xa,%edi
-   0x000000000040054f <+9>:	mov    $0x0,%eax
-   0x0000000000400554 <+14>:	callq  0x400440 <sleep@plt>
-   0x0000000000400559 <+19>:	mov    $0xe,%edx
-   0x000000000040055e <+24>:	mov    $0x400604,%esi
-   0x0000000000400563 <+29>:	mov    $0x1,%edi
-   0x0000000000400568 <+34>:	mov    $0x0,%eax
-   0x000000000040056d <+39>:	callq  0x400410 <write@plt>
-   0x0000000000400572 <+44>:	mov    $0x0,%eax
-   0x0000000000400577 <+49>:	pop    %rbp
-   0x0000000000400578 <+50>:	retq
-
-
-
-SYSCALL 219 at 7f4238452f10
-SYSCALL 219 at 7f4238452f10
-SYSCALL 1 at 7f4238474c00
-It works!
-SYSCALL 1 at 7f4238474c00
-SYSCALL 231 at 7f42384532e9
-
-*/
-
-
-
-
-
-
-
-
-
-
-
-
