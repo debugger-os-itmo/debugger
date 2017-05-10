@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdio.h>
 #include <set>
+#include <memory>
 
 #include "debug_info.h"
 
@@ -50,11 +51,11 @@ unsigned long long cur_pc_break;
 bool is_running = false;
 int status;
 std::map<unsigned long long, long> text;
-debug_info *info;
+std::unique_ptr<debug_info> info;
 bool is_done = false;
 
 
-namespace { 
+namespace {
     using std::string;
     const string QUIT[] = {"quit", "q", "Q", "exit"};
     const string RUN[] = {"run", "r", "R"};
@@ -66,13 +67,13 @@ namespace {
     const string NEXT[] = {"next"};
     const string REG[] = {"reg"};
     const string MEM[] = {"mem"};
-    
-    template<size_t N> 
+
+    template<size_t N>
     const string* end(const string (&arr)[N]) {
         return arr + N;
     }
 
-    template<size_t N> 
+    template<size_t N>
     bool helper_checker(const string (&arr)[N], const string& instruction) {
         return find(arr, end(arr), instruction) != end(arr);
     }
@@ -333,11 +334,11 @@ void kill_child() {
         ptrace(PTRACE_DETACH, traced, NULL, NULL);
         kill(traced, SIGTERM);
     }
-    exit(0); 
+    exit(0);
 }
 
 void set_signal_handler() {
-    if (signal(SIGINT, [](int signo) { 
+    if (signal(SIGINT, [](int signo) {
             if(signo == SIGINT) {
                 std::cout << "\tquit with signal\n";
                 kill_child();
@@ -432,10 +433,11 @@ int main(int argc, char* argv[])
     }
     set_signal_handler();
     try {
-        info = new debug_info(std::string(argv[1]));
+        info.reset(new debug_info(std::string(argv[1])));
     }
-    catch (const std::invalid_argument& e) {
+    catch (const std::exception& e) {
         printf("%s\n", e.what());
+        return 1;
     }
     traced = fork();
 
@@ -445,7 +447,7 @@ int main(int argc, char* argv[])
         std::string command;
         while (!is_done)
         {
-            printf("> ");     
+            printf("> ");
             getline(std::cin, command);
             std::stringstream stream(command);
             std::string next_command;
@@ -456,7 +458,7 @@ int main(int argc, char* argv[])
             } else if (is_break(next_command)) {
                 set_breakpoint(traced, stream);
             } else if (is_breaklist(next_command)) {
-                for (size_t breakpoint : breaks) 
+                for (size_t breakpoint : breaks)
                     printf("Breakpoint at %lx\n", breakpoint);
             } else if (is_clear(next_command)) {
                 /*stream >> data;
@@ -550,15 +552,3 @@ SYSCALL 1 at 7f4238474c00
 SYSCALL 231 at 7f42384532e9
 
 */
-
-
-
-
-
-
-
-
-
-
-
-

@@ -12,7 +12,8 @@ debug_info::debug_info(const std::string &exec_name) {
     }
 
     if (dwarf_init(fd, DW_DLC_READ, 0, 0, &dbg, &err) != DW_DLV_OK) {
-        fprintf(stderr, "Failed DWARF initialization\n");
+        close(fd);
+        throw std::runtime_error("Failed DWARF initialization\n");
     }
     else {
 
@@ -122,11 +123,3 @@ unsigned long long debug_info::find_next_line(unsigned long long line)
         ans++;
     return ans;
 }
-
-
-
-
-
-
-
-
