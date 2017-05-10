@@ -301,7 +301,7 @@ void read_child_memory(int pid, unsigned long long address) {
 void child(char* path)
 {
     char* file = strtok(path, "\\");
-    char* last;
+    char* last = file;
     while (file) {
         last = file;
         file = strtok(0, "\\");
