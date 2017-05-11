@@ -13,8 +13,6 @@
 
 #include "debug_info.h"
 
-//g++ -std=c++14 -Wall -Wextra -Werror debugger.cpp debug_info.cpp -o debugger -ldwarf -lelf
-//g++ -std=c++14 -g hello.c -o hello
 
 void set_breakpoint(pid_t traced, std::stringstream& stream, bool yes);
 void remove_breakpoint(pid_t traced, std::stringstream& stream, bool yes);
@@ -54,7 +52,7 @@ debug_info *info;
 bool is_done = false;
 
 
-namespace { 
+namespace {
     using std::string;
     const string QUIT[] = {"quit", "q", "Q", "exit"};
     const string RUN[] = {"run", "r", "R"};
@@ -63,16 +61,16 @@ namespace {
     const string BREAKLIST[] = {"breaklist", "bl"};
     const string CONTINUE[] = {"continue", "cont"};
     const string CLEAR[] = {"cl", "clear"};
-    const string NEXT[] = {"next"};
+    const string NEXT[] = {"next", "n"};
     const string REG[] = {"reg"};
     const string MEM[] = {"mem"};
-    
-    template<size_t N> 
+
+    template<size_t N>
     const string* end(const string (&arr)[N]) {
         return arr + N;
     }
 
-    template<size_t N> 
+    template<size_t N>
     bool helper_checker(const string (&arr)[N], const string& instruction) {
         return find(arr, end(arr), instruction) != end(arr);
     }
@@ -166,8 +164,10 @@ void continue_from_break(pid_t traced, unsigned long long b) {
             instr &= 0xffffffffffffff00;
             instr |= 0xcc;
         }
-        else
+        else {
             cleared_on_stop = false;
+            breaks.erase(b);
+        }
         log_error(ptrace(PTRACE_POKETEXT, traced, b, instr));
         user_regs_struct regs;
         log_error(ptrace(PTRACE_GETREGS, traced, 0, &regs));
@@ -246,7 +246,7 @@ void trace_step(pid_t traced)
         continue_from_break(traced, cur_pc_break);
     trace(traced);
 
-    uninitialize_next(traced, &breaks_copy);
+     uninitialize_next(traced, &breaks_copy);
 }
 
 
@@ -333,11 +333,11 @@ void kill_child() {
         ptrace(PTRACE_DETACH, traced, NULL, NULL);
         kill(traced, SIGTERM);
     }
-    exit(0); 
+    exit(0);
 }
 
 void set_signal_handler() {
-    if (signal(SIGINT, [](int signo) { 
+    if (signal(SIGINT, [](int signo) {
             if(signo == SIGINT) {
                 std::cout << "\tquit with signal\n";
                 kill_child();
@@ -445,7 +445,7 @@ int main(int argc, char* argv[])
         std::string command;
         while (!is_done)
         {
-            printf("> ");     
+            printf("> ");
             getline(std::cin, command);
             std::stringstream stream(command);
             std::string next_command;
@@ -456,7 +456,7 @@ int main(int argc, char* argv[])
             } else if (is_break(next_command)) {
                 set_breakpoint(traced, stream);
             } else if (is_breaklist(next_command)) {
-                for (size_t breakpoint : breaks) 
+                for (size_t breakpoint : breaks)
                     printf("Breakpoint at %lx\n", breakpoint);
             } else if (is_clear(next_command)) {
                 /*stream >> data;
@@ -520,45 +520,4 @@ int main(int argc, char* argv[])
         child(argv[1]);
     }
 
-    // g++ -std=c++14 -Wall -Wextra -Werror debugger.cpp -o debugger
-    // gcc hello.c -o hello
-    // ./debugger <full path to hello>
 }
-
-/*
- 0x0000000000400546 <+0>:	push   %rbp
-   0x0000000000400547 <+1>:	mov    %rsp,%rbp
-   0x000000000040054a <+4>:	mov    $0xa,%edi
-   0x000000000040054f <+9>:	mov    $0x0,%eax
-   0x0000000000400554 <+14>:	callq  0x400440 <sleep@plt>
-   0x0000000000400559 <+19>:	mov    $0xe,%edx
-   0x000000000040055e <+24>:	mov    $0x400604,%esi
-   0x0000000000400563 <+29>:	mov    $0x1,%edi
-   0x0000000000400568 <+34>:	mov    $0x0,%eax
-   0x000000000040056d <+39>:	callq  0x400410 <write@plt>
-   0x0000000000400572 <+44>:	mov    $0x0,%eax
-   0x0000000000400577 <+49>:	pop    %rbp
-   0x0000000000400578 <+50>:	retq
-
-
-
-SYSCALL 219 at 7f4238452f10
-SYSCALL 219 at 7f4238452f10
-SYSCALL 1 at 7f4238474c00
-It works!
-SYSCALL 1 at 7f4238474c00
-SYSCALL 231 at 7f42384532e9
-
-*/
-
-
-
-
-
-
-
-
-
-
-
-
