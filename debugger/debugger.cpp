@@ -437,6 +437,7 @@ int main(int argc, char* argv[])
     catch (const std::invalid_argument& e) {
         printf("%s\n", e.what());
     }
+    return 0;
     traced = fork();
 
     if (traced)

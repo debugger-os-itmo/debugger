@@ -1,5 +1,99 @@
 #include "debug_info.h"
 
+std::string diename(const Dwarf_Die &die) {
+    char *name;
+    Dwarf_Error de;
+    if (dwarf_diename(die, &name, &de) == DW_DLV_ERROR) {
+        errx(EXIT_FAILURE, "dwarf_diename: %s",
+        dwarf_errmsg(de));
+    }
+    return std::string(name);
+}
+
+Dwarf_Half dietag(const Dwarf_Die &die) {
+    Dwarf_Half tag;
+    Dwarf_Error de;
+    if (dwarf_tag(die, &tag, &de) == DW_DLV_ERROR) {
+        errx(EXIT_FAILURE, "dwarf_get_TAG_name: %s",
+        dwarf_errmsg(de));
+    }
+    return tag;
+}
+std::string tagname(const Dwarf_Half &tag) {
+    char const* tagname;
+    if (dwarf_get_TAG_name(tag, &tagname) == DW_DLV_ERROR) {
+        std::cout << "TAGNAME BAD\n";
+    }
+    return std::string(tagname);
+}
+
+std::string dietagname(Dwarf_Die &die) {
+    return tagname(dietag(die));
+}
+
+void dfs(Dwarf_Debug &dbg, Dwarf_Die die, std::string indent) {
+    Dwarf_Die die0;
+    Dwarf_Error de;
+    std::cout << indent << "name=" << diename(die) << " tag=" << dietagname(die) << '\n';
+    // if (string(dietagname)
+    if (dwarf_child(die, &die0, &de) != DW_DLV_OK) {
+        return;
+    }
+    if (indent.size() >= 2) {
+        return;
+    }
+
+    /* Get the rest of children. */
+    do {
+        die = die0;
+        dfs(dbg, die, indent + "\t");
+
+        if (dwarf_siblingof(dbg, die, &die0, &de) == DW_DLV_ERROR)
+            errx(EXIT_FAILURE, "dwarf_siblingof: %s",
+            dwarf_errmsg(de));
+    } while (die0 != NULL && die0 != die);
+
+}
+
+void debug_info::extract(Dwarf_Debug dbg) {
+    Dwarf_Abbrev ab;
+    Dwarf_Off aboff;
+    Dwarf_Unsigned length, attr_count;
+    Dwarf_Half tag;
+    Dwarf_Error de;
+    int ret;
+    Dwarf_Unsigned next_cu_header;
+
+    Dwarf_Die die, die0;
+
+    while ((ret = dwarf_next_cu_header(dbg, NULL, NULL, &aboff, 
+                NULL, &next_cu_header, &de)) !=  DW_DLV_OK) 
+        errx(EXIT_FAILURE, "dwarf_next_cu_header: %s",
+        dwarf_errmsg(de));
+
+    /* Get the first DIE for the current compilation unit. */
+    die = NULL;
+    if (dwarf_siblingof(dbg, die, &die0, &de) != DW_DLV_OK)
+        errx(EXIT_FAILURE, "dwarf_siblingof: %s", dwarf_errmsg(de));
+    
+    dfs(dbg, die0, "");
+    // Dwarf_Half version_stamp, address_size;
+    // Dwarf_Error err;
+    // Dwarf_Die no_die = 0, cu_die;//, child_die;
+    // Dwarf_Signed i;
+
+
+
+        // if ((ret = dwarf_next_cu_header(
+        //             dbg,
+        //             &cu_header_length,
+        //             &version_stamp,
+        //             &abbrev_offset,
+        //             &address_size,
+        //             ,
+        //             &err)) == DW_DLV_ERROR) {
+}
+
 debug_info::debug_info(const std::string &exec_name) {
     Dwarf_Debug dbg = 0;
     Dwarf_Error err;
@@ -16,14 +110,16 @@ debug_info::debug_info(const std::string &exec_name) {
     }
     else {
 
+        extract(dbg);
+        return;
         map_lines_to_pc(dbg);
 
         close(fd);
         printf("PCs\n");
         for (auto e1 : pcs) {
-            printf("file %s\n", e1.first.c_str());
-            for (auto e : e1.second)
-            printf("PC %#llx, line %llu\n", e.second, e.first);
+            // printf("file %s\n", e1.first.c_str());
+            // for (auto e : e1.second)
+                // printf("PC %#llx, line %llu\n", e.second, e.first);
         }
 
         if (dwarf_finish(dbg, &err) != DW_DLV_OK) {
@@ -77,7 +173,7 @@ void debug_info::map_lines_to_pc(Dwarf_Debug dbg) {
                 printf("file %s\n", src);
             if (dwarf_lineno(line, &no, &err) != DW_DLV_OK)
                 fprintf(stderr, "Error in dwarf_lineno\n");
-            printf("line number %llu, ", no);
+            // printf("line number %llu, ", no);
             if (dwarf_lineaddr(line, &addr, &err) != DW_DLV_OK)
                 fprintf(stderr, "Error in dwarf_lineaddr\n");
 

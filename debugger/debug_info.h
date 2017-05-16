@@ -18,7 +18,8 @@
 #include <map>
 #include <algorithm>
 #include <stdexcept>
-
+#include <err.h>    
+#include <iostream>
 
 class debug_info {
     // from PCs to lines and filenames
@@ -27,6 +28,7 @@ class debug_info {
     std::map<std::string, std::map<unsigned long long, unsigned long long>> pcs;
 
     void map_lines_to_pc(Dwarf_Debug);
+    void extract(Dwarf_Debug);
 
 public:
     debug_info(const std::string &);
