@@ -51,6 +51,9 @@ std::map<unsigned long long, long> text;
 debug_info *info;
 bool is_done = false;
 
+inline bool retain_break(unsigned long long b) {
+    return !cleared_on_stop || cur_pc_break != b;
+}
 
 namespace {
     using std::string;
@@ -113,13 +116,15 @@ void set_pc_break(pid_t traced, unsigned long long b, bool yes = true) {
         if (yes) printf("Breakpoint at %llx already set\n", b);
         return;
     }
-    long instr = log_error(ptrace(PTRACE_PEEKTEXT, traced, (void *) b, NULL));
+    breaks.insert(b);
     if (yes) printf("Set breakpoint at PC %llx\n", b);
+    if (!retain_break(b)) {
+        cleared_on_stop = false;
+        return;
+    }
+    long instr = log_error(ptrace(PTRACE_PEEKTEXT, traced, (void *) b, NULL));
     text[b] = instr;
     log_error(ptrace(PTRACE_POKETEXT, traced, (void *) b, (void *) (0xcc | (instr & 0xffffffffffffff00))));
-    if (stopped_on_pc_break && cur_pc_break == b)
-        cleared_on_stop = true;
-    breaks.insert(b);
 }
 
 // if !yes -- do not print info, because break was called by next program, not user
@@ -128,14 +133,15 @@ void remove_pc_break(pid_t traced, unsigned long long b, bool yes = true) {
         if (yes) printf("Breakpoint at %llx is not set\n", b);
         return;
     }
+    breaks.erase(b);
+    if (yes) printf("Breakpoint deleted at PC %llx\n", b);
     if (stopped_on_pc_break && cur_pc_break == b) {
-        if (yes) printf("Breakpoint deleted at %llx\n", b);
         cleared_on_stop = true;
         return;
     }
-    if (yes) printf("Breakpoint deleted at PC %llx\n", b);
-    log_error(ptrace(PTRACE_POKETEXT, traced, (void *) b, (void *) text[b]));
-    breaks.erase(b);
+    long t = log_error(ptrace(PTRACE_PEEKTEXT, traced, (void *) b, 0));
+    log_error(ptrace(PTRACE_POKETEXT, traced, (void *) b,
+        (void *) ( (t & 0xffffffffffffff00) | (text[b] & 0xff) ) ));
 }
 
 bool handle_pc_break(pid_t traced, unsigned long long b) {
@@ -160,7 +166,7 @@ void continue_from_break(pid_t traced, unsigned long long b) {
     waitpid(traced, &status, 0);
     if (WIFSTOPPED(status) && WSTOPSIG(status) & SIGTRAP) {
         long instr = log_error(ptrace(PTRACE_PEEKTEXT, traced, b, 0));
-        if (!cleared_on_stop) {
+        if (retain_break(b)) {
             instr &= 0xffffffffffffff00;
             instr |= 0xcc;
         }
@@ -356,16 +362,6 @@ void invalid_args(const std::string& com) {
 // if !yes -- do not print info, because break was called by next program, not user
 void set_breakpoint(pid_t traced, std::stringstream& stream, bool yes = true) {
     std::string data;
-    /*if (stream >> data) {
-        if (find(breaks.begin(), breaks.end(), data) == breaks.end()) {
-            breaks.push_back(data);
-            printf("Breakpoint set at %zu\n", data);
-        } else {
-            std::cout << "Such breakpoint was set earlier\n";
-        }
-    } else {
-        invalid_args("breaklist");
-    }*/
     if (stream >> data) {
         if (!strcmp(data.c_str(), "-pc")) {
             stream >> data;
@@ -459,14 +455,6 @@ int main(int argc, char* argv[])
                 for (size_t breakpoint : breaks)
                     printf("Breakpoint at %lx\n", breakpoint);
             } else if (is_clear(next_command)) {
-                /*stream >> data;
-                auto p = std::find(breaks.begin(), breaks.end(), data);
-                if (p == breaks.end()) {
-                    invalid_args(next_command);
-                } else {
-                    breaks.erase(p);
-                    printf("Breakpoint deleted at %zu\n", data);
-                }*/
                 remove_breakpoint(traced, stream);
             } else if (is_run(next_command)) {
                 if (!is_running) {
@@ -501,12 +489,6 @@ int main(int argc, char* argv[])
             } else if (is_mem(next_command)) {
                 std::string var;
                 stream >> var;
-                /*long long v;
-                if (var.length() >= 2 && var.substr(0, 2) == "0x")
-                    v = std::stoull(var, nullptr, 16);
-                else
-                    v = std::stoull(var, nullptr);
-                read_child_memory(traced, v);*/
                 read_child_memory(traced, std::stoull(var, nullptr, get_base(var)));
             } else if (is_help(next_command)) {
                 print_help();
