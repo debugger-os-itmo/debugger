@@ -27,8 +27,8 @@ class debug_info {
     // from lines to PCs
     std::map<std::string, std::map<unsigned long long, unsigned long long>> pcs;
 
-    void map_lines_to_pc(Dwarf_Debug);
-    void extract(Dwarf_Debug);
+    void map_lines_to_pc(const Dwarf_Debug&);
+    void extract(const Dwarf_Debug&);
 
 public:
     debug_info(const std::string &);
@@ -36,6 +36,8 @@ public:
     unsigned long long pc_by_line(const std::string &, unsigned long long);
     unsigned long long pc_by_line(unsigned long long);
     unsigned long long find_next_line(unsigned long long);
+    void* get_address_of_variable(std::string var_name);
+
 };
 
 #endif //DEBUG_INFO_H

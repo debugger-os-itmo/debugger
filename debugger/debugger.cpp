@@ -437,7 +437,6 @@ int main(int argc, char* argv[])
     catch (const std::invalid_argument& e) {
         printf("%s\n", e.what());
     }
-    return 0;
     traced = fork();
 
     if (traced)
@@ -502,13 +501,19 @@ int main(int argc, char* argv[])
             } else if (is_mem(next_command)) {
                 std::string var;
                 stream >> var;
+                if (var[0] == '0') {
+                    read_child_memory(traced, std::stoull(var, nullptr, get_base(var)));
+                } else {
+                    auto ptr = info->get_address_of_variable(var);
+                    std::cout << ptr << "\t";
+                    read_child_memory(traced, (size_t)ptr);
+                }
                 /*long long v;
                 if (var.length() >= 2 && var.substr(0, 2) == "0x")
                     v = std::stoull(var, nullptr, 16);
                 else
                     v = std::stoull(var, nullptr);
                 read_child_memory(traced, v);*/
-                read_child_memory(traced, std::stoull(var, nullptr, get_base(var)));
             } else if (is_help(next_command)) {
                 print_help();
             } else {
