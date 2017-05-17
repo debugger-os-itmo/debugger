@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdio.h>
 #include <set>
+#include <memory>
 
 #include "debug_info.h"
 
@@ -48,7 +49,7 @@ unsigned long long cur_pc_break;
 bool is_running = false;
 int status;
 std::map<unsigned long long, long> text;
-debug_info *info;
+std::unique_ptr<debug_info> info;
 bool is_done = false;
 
 inline bool retain_break(unsigned long long b) {
@@ -428,10 +429,11 @@ int main(int argc, char* argv[])
     }
     set_signal_handler();
     try {
-        info = new debug_info(std::string(argv[1]));
+        info.reset(new debug_info(std::string(argv[1])));
     }
-    catch (const std::invalid_argument& e) {
+    catch (const std::exception& e) {
         printf("%s\n", e.what());
+        return 1;
     }
     traced = fork();
 
