@@ -287,7 +287,7 @@ void print_regs(pid_t pid, const std::string& reg_name)
 }
 
 void read_child_memory(int pid, unsigned long long address, size_t len) {
-for (int tries = 0; tries < 5; ++tries) {
+    for (int tries = 0; tries < 5; ++tries) {
         errno = 0;
         long data = ptrace(PTRACE_PEEKDATA, pid, reinterpret_cast<void*>(address), 0);
         if (errno == 0) {

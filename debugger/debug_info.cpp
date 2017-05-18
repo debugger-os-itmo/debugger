@@ -124,7 +124,6 @@ std::pair<std::vector<char>, std::size_t> debug_info::get_address_of_variable(st
 }
 
 debug_info::debug_info(const std::string &exec_name) {
-    this->exec_name = exec_name;
     Dwarf_Debug dbg = 0;
     Dwarf_Error err;
     const char* progname;
@@ -205,7 +204,7 @@ void debug_info::map_lines_to_pc(const Dwarf_Debug &dbg) {
                 printf("file %s\n", src);
             if (dwarf_lineno(line, &no, &err) != DW_DLV_OK)
                 fprintf(stderr, "Error in dwarf_lineno\n");
-            // printf("line number %llu, ", no);
+            printf("line number %llu, ", no);
             if (dwarf_lineaddr(line, &addr, &err) != DW_DLV_OK)
                 fprintf(stderr, "Error in dwarf_lineaddr\n");
 
