@@ -293,16 +293,17 @@ void print_regs(pid_t pid, const std::string& reg_name)
     #undef magic_with_define
 }
 
-void read_child_memory(int pid, unsigned long long address) {
+void read_child_memory(int pid, unsigned long long address, size_t len) {
     for (int tries = 0; tries < 5; ++tries) {
         errno = 0;
         long data = ptrace(PTRACE_PEEKDATA, pid, reinterpret_cast<void*>(address), 0);
         if (errno == 0) {
-            std::cout << "mem " << address << ": " << data << "\n";
+            std::cout << "mem " << std::hex << address << std::dec << ": " << data << "\n";
             return;
         }
     }
-    std::cout << "Can't read memory by this address: " << address << ' ' << strerror(errno) << "\n";
+    std::cout << "Can't read memory by this address: " << std::hex << address << std::dec
+     << ' ' << strerror(errno) << "\n";
 }
 
 void child(char* path)
@@ -326,7 +327,8 @@ void print_help() {
     printf("clear <line number> [filename]  - Delete a breakpoint at line\n");
     printf("continue, cont                  - Continues the stopped process\n");
     printf("help, h, -h                     - Prints this help message\n");
-    printf("mem <address>                   - Prints memory at address\n");
+    printf("mem <address> <len>             - Prints len bytes of memory at address\n");
+    printf("mem <variable>                  - Tries to print variable value. Its type should be a base type\n");
     printf("next                            - Do next step\n");
     printf("reg <register>                  - Prints register\n");
     printf("run, r, R                       - Start the process\n");
@@ -386,7 +388,7 @@ void set_breakpoint(pid_t traced, std::stringstream& stream, bool yes = true) {
     }
 
 }
-
+       
 // if !yes -- do not print info, because break was called by next program, not user
 void remove_breakpoint(pid_t traced, std::stringstream& stream, bool yes = true) {
     std::string data;
@@ -418,6 +420,37 @@ int get_base(std::string s) {
         return 16;
     }
     return 10;
+}
+
+int sleb_decrypt(int byte) {
+    int bit = (byte >> 6) & 1;
+    for (int i = 7; i < 32; ++i) {
+        byte |= (bit << i);
+    }
+    return byte;
+}
+
+void print_value_by_name(int pid, string var) {
+    auto pair = info->get_address_of_variable(var);
+    std::vector<char> data = pair.first;
+    size_t len = pair.second;
+    if (data.size() == 0) {
+        std::cout << "No such variable was found in traced process: " << var << "\n";
+        return;
+    } 
+    size_t address = 0;
+    if (data[0] == (char)DW_OP_fbreg) {
+        struct user_regs_struct regs;
+        ptrace(PTRACE_GETREGS, pid, 0, &regs);
+        address = regs.rbp + sleb_decrypt(data[1]) + 16;
+    } else if (data[0] == (char)DW_OP_addr) {
+        for (int i = (int)data.size() - 1; i >= 1; --i) {
+            address = address * 256 + data[i];
+        }
+    } else {
+        return;
+    }
+    read_child_memory(pid, address, len);
 }
 
 int main(int argc, char* argv[])
@@ -491,7 +524,13 @@ int main(int argc, char* argv[])
             } else if (is_mem(next_command)) {
                 std::string var;
                 stream >> var;
-                read_child_memory(traced, std::stoull(var, nullptr, get_base(var)));
+                if (var[0] == '0') {
+                    size_t len;
+                    stream >> len;
+                    read_child_memory(traced, std::stoull(var, nullptr, get_base(var)), len);
+                } else {
+                    print_value_by_name(traced, var);
+                }
             } else if (is_help(next_command)) {
                 print_help();
             } else {
