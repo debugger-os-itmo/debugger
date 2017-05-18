@@ -6,7 +6,6 @@ namespace {
     Dwarf_Error de;
     Dwarf_Attribute atp;
     Dwarf_Unsigned ret;
-    Dwarf_Die ret_die;
 
     void check_ret_value(int x, char const* msg) {
         if (x == DW_DLV_ERROR) {
@@ -50,53 +49,50 @@ namespace {
 
 }
 
-// std::map<std::string, void*> variables;
+std::map<std::string, std::pair<std::vector<char>, size_t>> variables;
+
+
 
 void dfs(const Dwarf_Debug &dbg, Dwarf_Die die, std::string indent) {
     Dwarf_Die die0;
     Dwarf_Error de;
     Dwarf_Half tag = dietag(die);
 
-    std::cout << indent << "name=" << diename(die) << " tag=" << dietagname(die) << '\n';
     if (tag == DW_TAG_variable) {
-        std::cout << indent + "Helper info\n" << "\n";
-        std::cout << indent << "name=" << diename(die) << " tag=" << dietagname(die) << ' ';
+        std::cout << "name=" << indent + diename(die) << " tag=" << dietagname(die) << ' ';
         std::cout << "line #" << dwarfsizet(dieattr(die, DW_AT_decl_line)) << " ";        
 
-        Dwarf_Half ret;
         Dwarf_Off offset;
         Dwarf_Die child_die;
         auto type_attr = dieattr(die, DW_AT_type);
         dwarf_global_formref(type_attr,&offset,NULL);
         dwarf_offdie_b(dbg, offset, 1,&child_die,NULL);
         auto child_tag = dietag(child_die);
-        switch (child_tag) {
-            case DW_TAG_base_type:
-                auto location_attr = dieattr(die, DW_AT_location);
-                Dwarf_Unsigned retlen;
-                Dwarf_Ptr retpr;
-                Dwarf_Error de;
-                dwarf_formexprloc(location_attr, &retlen, &retpr, &de);
-                std::cout << retlen << ' ' << retpr << "\n";
-                // variables[diename(die)] = retpr;
-                break;
+        if (child_tag == DW_TAG_base_type) {
+            auto location_attr = dieattr(die, DW_AT_location);
 
+            Dwarf_Unsigned retlen;
+            Dwarf_Ptr retpr;
+            Dwarf_Error de;
+            dwarf_formexprloc(location_attr, &retlen, &retpr, &de);
+            std::vector<char> temp_vector((char*)retpr, ((char*)retpr) + retlen);
+            dwarf_bytesize(child_die, &retlen, &de);
+
+            variables[indent + diename(die)] = {temp_vector, retlen};
         }
 
-        std::cout << indent << "name=" << diename(child_die) << " tag=" << dietagname(child_die) << ' ';
         std::cout << "\n";
     } else if (tag == DW_TAG_subprogram) {
-        indent += "\t";
+        indent += diename(die) + ":";
     }
-    // if (string(dietagname)
+
     if (dwarf_child(die, &die0, &de) != DW_DLV_OK) {
         return;
     }
 
-    /* Get the rest of children. */
     do {
         die = die0;
-        dfs(dbg, die, indent + "\t");
+        dfs(dbg, die, indent);
 
         if (dwarf_siblingof(dbg, die, &die0, &de) == DW_DLV_ERROR)
             errx(EXIT_FAILURE, "dwarf_siblingof: %s",
@@ -106,51 +102,29 @@ void dfs(const Dwarf_Debug &dbg, Dwarf_Die die, std::string indent) {
 }
 
 void debug_info::extract(const Dwarf_Debug &dbg) {
-    Dwarf_Abbrev ab;
     Dwarf_Off aboff;
-    Dwarf_Unsigned length, attr_count;
-    Dwarf_Half tag;
     Dwarf_Error de;
-    int ret;
     Dwarf_Unsigned next_cu_header;
+    Dwarf_Die die0;
 
-    Dwarf_Die die, die0;
+    if (dwarf_next_cu_header(dbg, NULL, NULL, &aboff, NULL, &next_cu_header, &de) !=  DW_DLV_OK) 
+        errx(EXIT_FAILURE, "dwarf_next_cu_header: %s", dwarf_errmsg(de));
 
-    while ((ret = dwarf_next_cu_header(dbg, NULL, NULL, &aboff, 
-                NULL, &next_cu_header, &de)) !=  DW_DLV_OK) 
-        errx(EXIT_FAILURE, "dwarf_next_cu_header: %s",
-        dwarf_errmsg(de));
-
-    /* Get the first DIE for the current compilation unit. */
-    die = NULL;
-    if (dwarf_siblingof(dbg, die, &die0, &de) != DW_DLV_OK)
+    if (dwarf_siblingof(dbg, NULL, &die0, &de) != DW_DLV_OK)
         errx(EXIT_FAILURE, "dwarf_siblingof: %s", dwarf_errmsg(de));
     
     dfs(dbg, die0, "");
-    // Dwarf_Half version_stamp, address_size;
-    // Dwarf_Error err;
-    // Dwarf_Die no_die = 0, cu_die;//, child_die;
-    // Dwarf_Signed i;
-
-
-
-        // if ((ret = dwarf_next_cu_header(
-        //             dbg,
-        //             &cu_header_length,
-        //             &version_stamp,
-        //             &abbrev_offset,
-        //             &address_size,
-        //             ,
-        //             &err)) == DW_DLV_ERROR) {
 }
 
-void* debug_info::get_address_of_variable(std::string var_name) {
-    // auto it = variables.find(var_name);
-    // return it == variables.end() ? 0  : it->second;
-    return 0;
+std::pair<std::vector<char>, std::size_t> debug_info::get_address_of_variable(std::string var_name) {
+    auto it = variables.find(var_name);
+    static std::vector<char> empty;
+    static auto empty_pair = std::make_pair(empty, (size_t) 0);
+    return it == variables.end() ? empty_pair : it->second;
 }
 
 debug_info::debug_info(const std::string &exec_name) {
+    this->exec_name = exec_name;
     Dwarf_Debug dbg = 0;
     Dwarf_Error err;
     const char* progname;
@@ -176,10 +150,9 @@ debug_info::debug_info(const std::string &exec_name) {
             for (auto e : e1.second)
                 printf("PC %#llx, line %llu\n", e.second, e.first);
         }
-
-        // for (auto x : variables) {
-        //     std::cout << x.first << "->" << x.second << "\n";
-        // }
+        for (auto &x : variables) {
+            std::cout << x.first << "\n";
+        }
 
         if (dwarf_finish(dbg, &err) != DW_DLV_OK) {
             fprintf(stderr, "Failed DWARF finalization\n");

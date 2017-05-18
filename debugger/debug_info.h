@@ -22,6 +22,7 @@
 #include <iostream>
 
 class debug_info {
+    std::string exec_name;
     // from PCs to lines and filenames
     std::map<unsigned long long, std::pair<std::string, unsigned long long>> lines;
     // from lines to PCs
@@ -36,7 +37,7 @@ public:
     unsigned long long pc_by_line(const std::string &, unsigned long long);
     unsigned long long pc_by_line(unsigned long long);
     unsigned long long find_next_line(unsigned long long);
-    void* get_address_of_variable(std::string var_name);
+    std::pair<std::vector<char>, std::size_t> get_address_of_variable(std::string var_name);
 
 };
 
